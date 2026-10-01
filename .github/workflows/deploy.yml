@@ -53,13 +53,17 @@ jobs:
           TEST_DB_PORT: "3306"
           TEST_DB_USERNAME: root
           TEST_DB_PASSWORD: ci_test_password
+
           GMAIL_USERNAME: ci@example.invalid
           GMAIL_PASSWORD: ci-only-password
+
           JWT_SECRET: ci-only-jwt-secret-must-be-at-least-32-characters
           JWT_ACCESS_TOKEN_SECONDS: "900"
           JWT_REFRESH_TOKEN_SECONDS: "604800"
+
           APP_BASE_URL: http://localhost:8080
           PASSWORD_RESET_TOKEN_MINUTES: "30"
+
           NEWEBPAY_MERCHANT_ID: CI_ONLY
           NEWEBPAY_HASH_KEY: 12345678901234567890123456789012
           NEWEBPAY_HASH_IV: "1234567890123456"
@@ -67,14 +71,34 @@ jobs:
           NEWEBPAY_GATEWAY_URL: https://ccore.newebpay.com/MPG/mpg_gateway
           NEWEBPAY_NOTIFY_URL: http://localhost:8080/payments/newebpay/notify
           NEWEBPAY_RETURN_URL: http://localhost:8080/payments/newebpay/return
+
         run: |
           chmod +x mvnw
-          ./mvnw --batch-mode --no-transfer-progress clean package
+
+          ./mvnw \
+            --batch-mode \
+            --no-transfer-progress \
+            clean package
 
       - name: Prepare deployment artifact
         run: |
-          cp target/gtalent_spring_boot_260801-0.0.1-SNAPSHOT.jar target/app.jar
+          cp \
+            target/gtalent_spring_boot_260801-0.0.1-SNAPSHOT.jar \
+            target/app.jar
+
           test -s target/app.jar
+
+          echo "=== Verify PageController in deployment JAR ==="
+
+          jar -tf target/app.jar | grep PageController
+
+          echo "=== Verify login template in deployment JAR ==="
+
+          jar -tf target/app.jar | grep "templates/login.html"
+
+          echo "=== Deployment JAR checksum ==="
+
+          sha256sum target/app.jar
 
       - name: Configure SSH
         env:
@@ -82,8 +106,10 @@ jobs:
           EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
         run: |
           install -d -m 700 ~/.ssh
+
           printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/gtalent_deploy
           chmod 600 ~/.ssh/gtalent_deploy
+
           printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
@@ -94,13 +120,14 @@ jobs:
         run: |
           test -n "$EC2_HOST"
           test -n "$EC2_USER"
+
           scp \
             -i ~/.ssh/gtalent_deploy \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=10 \
             target/app.jar \
-            "$EC2_USER@$EC2_HOST:/home/ubuntu/gtalent_spring_boot_260801/target/app.jar.new"
+            "EC2USER@EC2_HOST:/home/ubuntu/gtalent_spring_boot_260801/target/app.jar.new"
 
       - name: Activate release and verify
         env:
@@ -112,40 +139,142 @@ jobs:
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE_SCRIPT'
+            "EC2USER@EC2_HOST" 'bash -se' <<'REMOTE_SCRIPT'
+
+          set -u
+
           APP_DIR=/home/ubuntu/gtalent_spring_boot_260801
           CURRENT_JAR="$APP_DIR/target/app.jar"
           BACKUP_JAR="$APP_DIR/target/app.jar.previous"
           INCOMING_JAR="$APP_DIR/target/app.jar.new"
 
+          echo "=== Verify uploaded JAR exists ==="
+
           test -s "$INCOMING_JAR"
 
+          echo "=== Verify PageController in uploaded JAR ==="
+
+          jar -tf "$INCOMING_JAR" | grep PageController
+
+          echo "=== Verify login template in uploaded JAR ==="
+
+          jar -tf "$INCOMING_JAR" | grep "templates/login.html"
+
+          echo "=== Uploaded JAR checksum ==="
+
+          sha256sum "$INCOMING_JAR"
+
+          echo "=== Back up current JAR ==="
+
           if test -f "$CURRENT_JAR"; then
-            cp "$CURRENT_JAR" "$BACKUP_JAR"
+            cp "CURRENTJAR""BACKUP_JAR"
           fi
 
-          mv "$INCOMING_JAR" "$CURRENT_JAR"
+          echo "=== Activate new JAR ==="
+
+          mv "INCOMINGJAR""CURRENT_JAR"
+
+          echo "=== Verify active JAR ==="
+
+          jar -tf "$CURRENT_JAR" | grep PageController
+          sha256sum "$CURRENT_JAR"
+
+          echo "=== Restart Spring Boot ==="
+
           sudo systemctl restart gtalent
 
+          echo "Waiting 5 seconds before health checks..."
+
+          sleep 5
+
+          echo "=== Start health checks ==="
+
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error \
-              http://127.0.0.1:8080/page/login > /dev/null; then
+
+            STATUS=$(
+              curl \
+                --silent \
+                --output /dev/null \
+                --write-out "%{http_code}" \
+                http://127.0.0.1:8080/page/login \
+                || true
+            )
+
+            echo "Health check attempt $attempt: HTTP $STATUS"
+
+            if [ "$STATUS" = "200" ]; then
               echo "Deployment succeeded."
+
+              echo "=== Service status ==="
+
+              sudo systemctl \
+                --no-pager \
+                --full \
+                status gtalent \
+                || true
+
               exit 0
             fi
+
             sleep 2
+
           done
 
           echo "Health check failed."
-          sudo journalctl -u gtalent -n 80 --no-pager || true
+
+          echo "=== Service status ==="
+
+          sudo systemctl \
+            --no-pager \
+            --full \
+            status gtalent \
+            || true
+
+          echo "=== Latest application logs ==="
+
+          sudo journalctl \
+            -u gtalent \
+            -n 120 \
+            --no-pager \
+            || true
+
+          echo "=== Current JAR content ==="
+
+          jar -tf "$CURRENT_JAR" | grep PageController || true
+          jar -tf "$CURRENT_JAR" | grep "templates/login.html" || true
+
+          echo "=== Direct health check response ==="
+
+          curl \
+            -i \
+            http://127.0.0.1:8080/page/login \
+            || true
 
           if test -f "$BACKUP_JAR"; then
-            echo "Rolling back to the previous JAR."
-            mv "$BACKUP_JAR" "$CURRENT_JAR"
+
+            echo "=== Rolling back to previous JAR ==="
+
+            mv "BACKUPJAR""CURRENT_JAR"
+
             sudo systemctl restart gtalent
+
+            echo "Waiting for rollback service startup..."
+
+            sleep 5
+
+            echo "=== Rollback health check ==="
+
+            curl \
+              -i \
+              http://127.0.0.1:8080/page/login \
+              || true
+
           else
+
             echo "No previous JAR is available for rollback."
+
           fi
 
           exit 1
+
           REMOTE_SCRIPT
