@@ -127,7 +127,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=10 \
             target/app.jar \
-            "EC2USER@EC2_HOST:/home/ubuntu/gtalent_spring_boot_260801/target/app.jar.new"
+            "$EC2_USER@$EC2_HOST:/home/ubuntu/gtalent_spring_boot_260801/target/app.jar.new"
 
       - name: Activate release and verify
         env:
@@ -139,7 +139,7 @@ jobs:
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=10 \
-            "EC2USER@EC2_HOST" 'bash -se' <<'REMOTE_SCRIPT'
+            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE_SCRIPT'
 
           set -u
 
