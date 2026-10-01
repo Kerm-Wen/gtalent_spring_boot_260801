@@ -122,6 +122,44 @@ jobs:
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE_SCRIPT'
-          set -u
-          cd
+            "$EC2_USER@$EC2_HOST" 'bash -e' <<'REMOTE_SCRIPT'
+          APP_DIR="/home/ubuntu/gtalent_spring_boot_260801/target"
+          
+          # 1. 備份舊版本並切換新 JAR
+          if [ -f "$APP_DIR/app.jar" ]; then
+            cp "$APP_DIR/app.jar" "$APP_DIR/app.jar.bak"
+          fi
+          mv "$APP_DIR/app.jar.new" "$APP_DIR/app.jar"
+
+          # 2. 重啟 Spring Boot 服務
+          sudo systemctl restart gtalent.service
+
+          # 3. 健康檢查輪詢（Retry 機制，最長等待 45 秒）
+          HEALTH_URL="http://127.0.0.1:8080/login"  # 請改為你專案中實際存在的有效路徑（如 /login 或 /actuator/health）
+          SUCCESS=0
+
+          echo "Beginning health check against $HEALTH_URL..."
+          for i in {1..15}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || true)
+            echo "Attempt $i: HTTP Status Code $HTTP_CODE"
+            
+            # 200 到 399 表示服務已順利運作
+            if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 400 ]]; then
+              SUCCESS=1
+              break
+            fi
+            sleep 3
+          done
+
+          # 4. 健康檢查結果判定與 Rollback 處理
+          if [ $SUCCESS -ne 1 ]; then
+            echo "Health check failed! Rolling back to previous JAR..."
+            if [ -f "$APP_DIR/app.jar.bak" ]; then
+              mv "$APP_DIR/app.jar.bak" "$APP_DIR/app.jar"
+              sudo systemctl restart gtalent.service
+            fi
+            exit 1
+          fi
+
+          echo "Deployment completed successfully!"
+          REMOTE_SCRIPT
