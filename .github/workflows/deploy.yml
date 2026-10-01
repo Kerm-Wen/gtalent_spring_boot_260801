@@ -122,44 +122,79 @@ jobs:
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST" 'bash -e' <<'REMOTE_SCRIPT'
-          APP_DIR="/home/ubuntu/gtalent_spring_boot_260801/target"
-          
-          # 1. 備份舊版本並切換新 JAR
-          if [ -f "$APP_DIR/app.jar" ]; then
-            cp "$APP_DIR/app.jar" "$APP_DIR/app.jar.bak"
+            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE_SCRIPT'
+          set -u
+          cd /home/ubuntu/gtalent_spring_boot_260801/target
+
+          echo "=== Verify uploaded JAR exists ==="
+          test -s app.jar.new
+
+          echo "=== Verify PageController in uploaded JAR ==="
+          jar -tf app.jar.new | grep PageController
+
+          echo "=== Verify login template in uploaded JAR ==="
+          jar -tf app.jar.new | grep "templates/login.html"
+
+          echo "=== Uploaded JAR checksum ==="
+          sha256sum app.jar.new
+
+          echo "=== Back up current JAR ==="
+          if test -f app.jar; then
+            cp app.jar app.jar.previous
           fi
-          mv "$APP_DIR/app.jar.new" "$APP_DIR/app.jar"
 
-          # 2. 重啟 Spring Boot 服務
-          sudo systemctl restart gtalent.service
+          echo "=== Activate new JAR ==="
+          mv app.jar.new app.jar
 
-          # 3. 健康檢查輪詢（Retry 機制，最長等待 45 秒）
-          HEALTH_URL="http://127.0.0.1:8080/login"  # 請改為你專案中實際存在的有效路徑（如 /login 或 /actuator/health）
-          SUCCESS=0
+          echo "=== Verify active JAR ==="
+          jar -tf app.jar | grep PageController
+          sha256sum app.jar
 
-          echo "Beginning health check against $HEALTH_URL..."
-          for i in {1..15}; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || true)
-            echo "Attempt $i: HTTP Status Code $HTTP_CODE"
-            
-            # 200 到 399 表示服務已順利運作
-            if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 400 ]]; then
-              SUCCESS=1
-              break
+          echo "=== Restart Spring Boot ==="
+          sudo systemctl restart gtalent
+
+          echo "Waiting 5 seconds before health checks..."
+          sleep 5
+
+          echo "=== Start health checks ==="
+          for attempt in $(seq 1 30); do
+            STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" http://127.0.0.1:8080/page/login || true)
+            echo "Health check attempt $attempt: HTTP $STATUS"
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Deployment succeeded."
+              echo "=== Service status ==="
+              sudo systemctl --no-pager --full status gtalent || true
+              exit 0
             fi
-            sleep 3
+
+            sleep 2
           done
 
-          # 4. 健康檢查結果判定與 Rollback 處理
-          if [ $SUCCESS -ne 1 ]; then
-            echo "Health check failed! Rolling back to previous JAR..."
-            if [ -f "$APP_DIR/app.jar.bak" ]; then
-              mv "$APP_DIR/app.jar.bak" "$APP_DIR/app.jar"
-              sudo systemctl restart gtalent.service
-            fi
-            exit 1
+          echo "Health check failed."
+
+          echo "=== Service status ==="
+          sudo systemctl --no-pager --full status gtalent || true
+
+          echo "=== Latest application logs ==="
+          sudo journalctl -u gtalent -n 120 --no-pager || true
+
+          echo "=== Direct health check response ==="
+          curl -i http://127.0.0.1:8080/page/login || true
+
+          if test -f app.jar.previous; then
+            echo "=== Rolling back to previous JAR ==="
+            mv app.jar.previous app.jar
+            sudo systemctl restart gtalent
+
+            echo "Waiting for rollback service startup..."
+            sleep 5
+
+            echo "=== Rollback health check ==="
+            curl -i http://127.0.0.1:8080/page/login || true
+          else
+            echo "No previous JAR is available for rollback."
           fi
 
-          echo "Deployment completed successfully!"
+          exit 1
           REMOTE_SCRIPT
