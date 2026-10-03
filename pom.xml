@@ -99,6 +99,14 @@
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
+
+		<!-- LINE Messaging API + Webhook handler for Spring WebMVC -->
+		<dependency>
+			<groupId>com.linecorp.bot</groupId>
+			<artifactId>line-bot-spring-boot-webmvc</artifactId>
+			<version>${line.bot.sdk.version}</version>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-devtools</artifactId>
