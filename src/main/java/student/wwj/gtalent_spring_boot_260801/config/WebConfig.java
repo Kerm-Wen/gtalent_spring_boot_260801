@@ -4,6 +4,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
+
 import student.wwj.gtalent_spring_boot_260801.interceptor.AuthInterceptor;
 
 @Configuration
@@ -33,7 +34,8 @@ public class WebConfig implements WebMvcConfigurer {
                         "/members/forgot-password",
                         "/members/reset-password",
                         "/payments/newebpay/notify",
-                        "/payments/newebpay/return"
+                        "/payments/newebpay/return",
+                        "/line/**"
                 );
     }
 }
